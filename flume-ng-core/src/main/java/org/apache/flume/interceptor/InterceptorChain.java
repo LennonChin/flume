@@ -59,6 +59,7 @@ public class InterceptorChain implements Interceptor {
       if (events.isEmpty()) {
         return events;
       }
+      // 拦截器处理
       events = interceptor.intercept(events);
       Preconditions.checkNotNull(events,
           "Event list returned null from interceptor %s", interceptor);

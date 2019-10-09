@@ -123,6 +123,7 @@ public class TaildirMatcher {
     this.parentDir = f.getParentFile();
     String regex = f.getName();
     final PathMatcher matcher = FS.getPathMatcher("regex:" + regex);
+    // 文件过滤器
     this.fileFilter = new DirectoryStream.Filter<Path>() {
       @Override
       public boolean accept(Path entry) throws IOException {
@@ -130,9 +131,9 @@ public class TaildirMatcher {
       }
     };
 
-    // sanity check
+    // sanity check，完整性检查
     Preconditions.checkState(parentDir.exists(),
-        "Directory does not exist: " + parentDir.getAbsolutePath());
+            "Directory does not exist: " + parentDir.getAbsolutePath());
   }
 
   /**
@@ -182,7 +183,8 @@ public class TaildirMatcher {
    */
   List<File> getMatchingFiles() {
     long now = TimeUnit.SECONDS.toMillis(
-        TimeUnit.MILLISECONDS.toSeconds(System.currentTimeMillis()));
+            TimeUnit.MILLISECONDS.toSeconds(System.currentTimeMillis()));
+    // 父目录更新时间
     long currentParentDirMTime = parentDir.lastModified();
     List<File> result;
 
@@ -192,8 +194,8 @@ public class TaildirMatcher {
     // - last mtime change wasn't already checked for sure
     //   (system clock hasn't passed that second yet)
     if (!cachePatternMatching ||
-        lastSeenParentDirMTime < currentParentDirMTime ||
-        !(currentParentDirMTime < lastCheckedTime)) {
+            lastSeenParentDirMTime < currentParentDirMTime ||
+            !(currentParentDirMTime < lastCheckedTime)) {
       lastMatchedFiles = sortByLastModifiedTime(getMatchingFilesNoCache());
       lastSeenParentDirMTime = currentParentDirMTime;
       lastCheckedTime = now;
@@ -226,7 +228,7 @@ public class TaildirMatcher {
       }
     } catch (IOException e) {
       logger.error("I/O exception occurred while listing parent directory. " +
-                   "Files already matched will be returned. " + parentDir.toPath(), e);
+              "Files already matched will be returned. " + parentDir.toPath(), e);
     }
     return result;
   }
@@ -257,10 +259,10 @@ public class TaildirMatcher {
   @Override
   public String toString() {
     return "{" +
-        "filegroup='" + fileGroup + '\'' +
-        ", filePattern='" + filePattern + '\'' +
-        ", cached=" + cachePatternMatching +
-        '}';
+            "filegroup='" + fileGroup + '\'' +
+            ", filePattern='" + filePattern + '\'' +
+            ", cached=" + cachePatternMatching +
+            '}';
   }
 
   @Override

@@ -143,10 +143,13 @@ public class ChannelProcessor implements Configurable {
    * @throws ChannelException when a write to a required channel fails.
    */
   public void processEventBatch(List<Event> events) {
+    // 检查事件是否为空
     Preconditions.checkNotNull(events, "Event list must not be null");
 
+    // 拦截器操作
     events = interceptorChain.intercept(events);
 
+    // Required队列
     Map<Channel, List<Event>> reqChannelQueue =
         new LinkedHashMap<Channel, List<Event>>();
 
@@ -154,45 +157,60 @@ public class ChannelProcessor implements Configurable {
         new LinkedHashMap<Channel, List<Event>>();
 
     for (Event event : events) {
+
+      // 获取Required Channel集合
       List<Channel> reqChannels = selector.getRequiredChannels(event);
 
+      // 遍历Required Channel
       for (Channel ch : reqChannels) {
+        // 先从reqChannelQueue中取出Channel对应的队列
         List<Event> eventQueue = reqChannelQueue.get(ch);
-        if (eventQueue == null) {
+        if (eventQueue == null) { // 不存在，则创建
           eventQueue = new ArrayList<Event>();
           reqChannelQueue.put(ch, eventQueue);
         }
+        // 事件放入队列中
         eventQueue.add(event);
       }
 
+      // 获取Optional Channel
       List<Channel> optChannels = selector.getOptionalChannels(event);
 
+      // 遍历Optional Channel
       for (Channel ch : optChannels) {
+        // 先从optChannelQueue中取出Channel对应的队列
         List<Event> eventQueue = optChannelQueue.get(ch);
-        if (eventQueue == null) {
+        if (eventQueue == null) { // 不存在，则创建
           eventQueue = new ArrayList<Event>();
           optChannelQueue.put(ch, eventQueue);
         }
-
+        // 事件放入队列中
         eventQueue.add(event);
       }
     }
 
     // Process required channels
+    // 处理Required Channel的事件
     for (Channel reqChannel : reqChannelQueue.keySet()) {
+      // 构造事务
       Transaction tx = reqChannel.getTransaction();
       Preconditions.checkNotNull(tx, "Transaction object must not be null");
       try {
+        // 开启事务
         tx.begin();
 
+        // 获取一批事件
         List<Event> batch = reqChannelQueue.get(reqChannel);
 
+        // 循环发送到Required Channel
         for (Event event : batch) {
           reqChannel.put(event);
         }
 
+        // 提交
         tx.commit();
       } catch (Throwable t) {
+        // 回滚
         tx.rollback();
         if (t instanceof Error) {
           LOG.error("Error while writing to required channel: " + reqChannel, t);
@@ -211,6 +229,7 @@ public class ChannelProcessor implements Configurable {
     }
 
     // Process optional channels
+    // 处理Optional Channel的事件
     for (Channel optChannel : optChannelQueue.keySet()) {
       Transaction tx = optChannel.getTransaction();
       Preconditions.checkNotNull(tx, "Transaction object must not be null");

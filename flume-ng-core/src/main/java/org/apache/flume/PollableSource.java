@@ -44,11 +44,15 @@ public interface PollableSource extends Source {
    * @throws EventDeliveryException If there was a failure in delivering to
    * the attached channel, or if a failure occurred in acquiring data from
    * the source.
+   *
+   * 主要的运行代码，从Source进行pull操作，拉取item并发送到Channel
    */
   public Status process() throws EventDeliveryException;
 
+  // 获取退避增量时间
   public long getBackOffSleepIncrement();
 
+  // 获取最大退避时间
   public long getMaxBackOffSleepInterval();
 
   public static enum Status {

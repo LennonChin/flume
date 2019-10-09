@@ -77,8 +77,8 @@ public class PollableSourceRunner extends SourceRunner {
     runner.shouldStop = shouldStop;
 
     runnerThread = new Thread(runner);
-    runnerThread.setName(getClass().getSimpleName() + "-" + 
-        source.getClass().getSimpleName() + "-" + source.getName());
+    runnerThread.setName(getClass().getSimpleName() + "-" +
+            source.getClass().getSimpleName() + "-" + source.getName());
     runnerThread.start();
 
     lifecycleState = LifecycleState.START;
@@ -108,7 +108,7 @@ public class PollableSourceRunner extends SourceRunner {
   @Override
   public String toString() {
     return "PollableSourceRunner: { source:" + getSource() + " counterGroup:"
-        + counterGroup + " }";
+            + counterGroup + " }";
   }
 
   @Override
@@ -122,20 +122,22 @@ public class PollableSourceRunner extends SourceRunner {
     private AtomicBoolean shouldStop;
     private CounterGroup counterGroup;
 
+    // 线程的run()方法
     @Override
     public void run() {
       logger.debug("Polling runner starting. Source:{}", source);
 
-      while (!shouldStop.get()) {
+      while (!shouldStop.get()) { // 不断while循环
         counterGroup.incrementAndGet("runner.polls");
 
         try {
+          // 调用Source的process()方法
           if (source.process().equals(PollableSource.Status.BACKOFF)) {
             counterGroup.incrementAndGet("runner.backoffs");
 
             Thread.sleep(Math.min(
-                counterGroup.incrementAndGet("runner.backoffs.consecutive")
-                * source.getBackOffSleepIncrement(), source.getMaxBackOffSleepInterval()));
+                    counterGroup.incrementAndGet("runner.backoffs.consecutive")
+                            * source.getBackOffSleepIncrement(), source.getMaxBackOffSleepInterval()));
           } else {
             counterGroup.set("runner.backoffs.consecutive", 0L);
           }
@@ -148,7 +150,7 @@ public class PollableSourceRunner extends SourceRunner {
         } catch (Exception e) {
           counterGroup.incrementAndGet("runner.errors");
           logger.error("Unhandled exception, logging and sleeping for " +
-              source.getMaxBackOffSleepInterval() + "ms", e);
+                  source.getMaxBackOffSleepInterval() + "ms", e);
           try {
             Thread.sleep(source.getMaxBackOffSleepInterval());
           } catch (InterruptedException ex) {

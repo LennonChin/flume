@@ -55,13 +55,18 @@ public class TailFile {
   private long lineReadPos;
 
   public TailFile(File file, Map<String, String> headers, long inode, long pos)
-      throws IOException {
+          throws IOException {
+    // 创建RandomAccessFile
     this.raf = new RandomAccessFile(file, "r");
     if (pos > 0) {
+      // seek到指定Position
       raf.seek(pos);
+      // 行读取Position
       lineReadPos = pos;
     }
+    // 文件绝对路径
     this.path = file.getAbsolutePath();
+    // inode
     this.inode = inode;
     this.pos = pos;
     this.lastUpdated = 0L;
@@ -83,6 +88,7 @@ public class TailFile {
     return inode;
   }
 
+  // 开始读取的position
   public long getPos() {
     return pos;
   }
@@ -120,8 +126,11 @@ public class TailFile {
   }
 
   public boolean updatePos(String path, long inode, long pos) throws IOException {
+    // 检查是否是同一个文件
     if (this.inode == inode && this.path.equals(path)) {
+      // 设置pos属性的值
       setPos(pos);
+      // 更新文件的position，即使用RandomAccessFile的seek()方法
       updateFilePos(pos);
       logger.info("Updated position, file: " + path + ", inode: " + inode + ", pos: " + pos);
       return true;
@@ -137,31 +146,37 @@ public class TailFile {
 
 
   public List<Event> readEvents(int numEvents, boolean backoffWithoutNL,
-      boolean addByteOffset) throws IOException {
+                                boolean addByteOffset) throws IOException {
     List<Event> events = Lists.newLinkedList();
     for (int i = 0; i < numEvents; i++) {
+      // 读取事件
       Event event = readEvent(backoffWithoutNL, addByteOffset);
       if (event == null) {
         break;
       }
+      // 存入列表
       events.add(event);
     }
     return events;
   }
 
   private Event readEvent(boolean backoffWithoutNL, boolean addByteOffset) throws IOException {
+    // 暂存文件当前lineReadPos
     Long posTmp = getLineReadPos();
+    // 读取一行
     LineResult line = readLine();
     if (line == null) {
       return null;
     }
     if (backoffWithoutNL && !line.lineSepInclude) {
       logger.info("Backing off in file without newline: "
-          + path + ", inode: " + inode + ", pos: " + raf.getFilePointer());
+              + path + ", inode: " + inode + ", pos: " + raf.getFilePointer());
       updateFilePos(posTmp);
       return null;
     }
+    // 封装为Event
     Event event = EventBuilder.withBody(line.line);
+    // 判断是否需要跳过每行的标题
     if (addByteOffset == true) {
       event.getHeaders().put(BYTE_OFFSET_HEADER_KEY, posTmp.toString());
     }
@@ -169,11 +184,14 @@ public class TailFile {
   }
 
   private void readFile() throws IOException {
-    if ((raf.length() - raf.getFilePointer()) < BUFFER_SIZE) {
+    if ((raf.length() - raf.getFilePointer()) < BUFFER_SIZE) { // 最大读8K
+      // 不够8K
       buffer = new byte[(int) (raf.length() - raf.getFilePointer())];
     } else {
+      // 最大读8K
       buffer = new byte[BUFFER_SIZE];
     }
+    // 读取数据到buffer
     raf.read(buffer, 0, buffer.length);
     bufferPos = 0;
   }
@@ -190,30 +208,42 @@ public class TailFile {
     LineResult lineResult = null;
     while (true) {
       if (bufferPos == NEED_READING) {
-        if (raf.getFilePointer() < raf.length()) {
+        if (raf.getFilePointer() < raf.length()) { // 不能超出文件的大小
+          // 读取文件内容，数据读取到buffer变量中
           readFile();
-        } else {
+        } else { // 如果文件的指针已经读到最后了，就判断oldBuffer是否还有数据
           if (oldBuffer.length > 0) {
+            // oldBuffer还有数据，包装为lineResult
             lineResult = new LineResult(false, oldBuffer);
+            // 将oldBuffer置空
             oldBuffer = new byte[0];
+            // 更新TailFile的lineReadPos
             setLineReadPos(lineReadPos + lineResult.line.length);
           }
+          // 跳出循环
           break;
         }
       }
+
+      // 走到这里说明buffer已经装有读到的数据了，不过此时oldBuffer也可能装有数据
       for (int i = bufferPos; i < buffer.length; i++) {
+        // 读buffer的数据
         if (buffer[i] == BYTE_NL) {
           int oldLen = oldBuffer.length;
           // Don't copy last byte(NEW_LINE)
           int lineLen = i - bufferPos;
           // For windows, check for CR
+          // windows系统，检查CR标志，如果存在需要将CR标志去掉
           if (i > 0 && buffer[i - 1] == BYTE_CR) {
             lineLen -= 1;
           } else if (oldBuffer.length > 0 && oldBuffer[oldBuffer.length - 1] == BYTE_CR) {
             oldLen -= 1;
           }
+
+          // 处理oldBuffer的数据
           lineResult = new LineResult(true,
-              concatByteArrays(oldBuffer, 0, oldLen, buffer, bufferPos, lineLen));
+                  concatByteArrays(oldBuffer, 0, oldLen, buffer, bufferPos, lineLen));
+          // 更新TailFile的lineReadPos
           setLineReadPos(lineReadPos + (oldBuffer.length + (i - bufferPos + 1)));
           oldBuffer = new byte[0];
           if (i + 1 < buffer.length) {
@@ -228,8 +258,9 @@ public class TailFile {
         break;
       }
       // NEW_LINE not showed up at the end of the buffer
+      // 合并oldBuffer和buffer剩余的数据，赋值该oldBuffer
       oldBuffer = concatByteArrays(oldBuffer, 0, oldBuffer.length,
-                                   buffer, bufferPos, buffer.length - bufferPos);
+              buffer, bufferPos, buffer.length - bufferPos);
       bufferPos = NEED_READING;
     }
     return lineResult;
@@ -247,6 +278,7 @@ public class TailFile {
   }
 
   private class LineResult {
+    // 标识是否存在换行符
     final boolean lineSepInclude;
     final byte[] line;
 
