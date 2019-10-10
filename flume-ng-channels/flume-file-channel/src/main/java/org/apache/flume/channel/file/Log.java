@@ -363,9 +363,13 @@ public class Log {
     this.checkpointOnClose = checkpointOnClose;
 
     logFiles = new AtomicReferenceArray<LogFile.Writer>(this.logDirs.length);
+
+    // 启动一个单线程工作线程池
     workerExecutor = Executors.newSingleThreadScheduledExecutor(new
         ThreadFactoryBuilder().setNameFormat("Log-BackgroundWorker-" + name)
         .build());
+
+    // 默认延迟30秒启动，每隔30秒执行一次
     workerExecutor.scheduleWithFixedDelay(new BackgroundWorker(this),
         this.checkpointInterval, this.checkpointInterval,
         TimeUnit.MILLISECONDS);
@@ -375,11 +379,15 @@ public class Log {
    * Read checkpoint and data files from disk replaying them to the state
    * directly before the shutdown or crash.
    *
+   * 从磁盘读取Checkpoint文件和数据文件，并进行重放
+   *
    * @throws IOException
    */
   void replay() throws IOException {
+    // 必须在打开之前进行replay操作
     Preconditions.checkState(!open, "Cannot replay after Log has been opened");
 
+    // 获取写锁
     lockExclusive();
     try {
       /*
@@ -391,13 +399,20 @@ public class Log {
        * Also store up the list of files so we can replay them later.
        */
       LOGGER.info("Replay started");
+      // 重置FileID
       nextFileID.set(0);
+      // 数据文件列表
       List<File> dataFiles = Lists.newArrayList();
+      // 遍历logDirs，这个logDirs其实就是dataDir集合
       for (File logDir : logDirs) {
+        // 找到logDir目录下的所有文件
         for (File file : LogUtils.getLogs(logDir)) {
+          // 获取log文件的ID
           int id = LogUtils.getIDForFile(file);
           dataFiles.add(file);
+          // nextFileID记录了最大的log文件ID
           nextFileID.set(Math.max(nextFileID.get(), id));
+          // 映射每个log文件的ID和RandomReader读取器，添加了加密功能
           idLogFileMap.put(id, LogFileFactory.getRandomReader(new File(logDir,
               PREFIX + id), encryptionKeyProvider, fsyncPerTransaction));
         }
@@ -408,6 +423,8 @@ public class Log {
       /*
        * sort the data files by file id so we can replay them by file id
        * which should approximately give us sequential events
+       *
+       * 根据文件ID排序
        */
       LogUtils.sort(dataFiles);
 
@@ -415,10 +432,14 @@ public class Log {
       /*
        * Read the checkpoint (in memory queue) from one of two alternating
        * locations. We will read the last one written to disk.
+       *
+       * 获取Checkpoint文件
+       * 即${user.home}/.flume/file-channel/checkpoint/checkpoint文件
        */
       File checkpointFile = new File(checkpointDir, "checkpoint");
-      if (shouldFastReplay) {
-        if (checkpointFile.exists()) {
+      if (shouldFastReplay) { // 快速重放
+        if (checkpointFile.exists()) { // 检查Checkpoint文件是否存在
+          // 如果Checkpoint文件存在，则不能进行快速重放
           LOGGER.debug("Disabling fast full replay because checkpoint " +
               "exists: " + checkpointFile);
           shouldFastReplay = false;
@@ -427,18 +448,29 @@ public class Log {
               " does not exist: " + checkpointFile);
         }
       }
+
+      // ${user.home}/.flume/file-channel/checkpoint/inflighttakes文件
       File inflightTakesFile = new File(checkpointDir, "inflighttakes");
+      // ${user.home}/.flume/file-channel/checkpoint/inflightputs文件
       File inflightPutsFile = new File(checkpointDir, "inflightputs");
+      // ${user.home}/.flume/file-channel/checkpoint/queueset目录
       File queueSetDir = new File(checkpointDir, QUEUE_SET);
       EventQueueBackingStore backingStore = null;
 
 
       try {
+        // 获取EventQueueBackingStore，该队列对checkpoint中的数据进行了整合
         backingStore =
             EventQueueBackingStoreFactory.get(checkpointFile,
                 backupCheckpointDir, queueCapacity, channelNameDescriptor,
                 true, this.useDualCheckpoints,
                 this.compressBackupCheckpoint);
+
+        /**
+         * 事件队列，包装了EventQueueBackingStore
+         * 该队列中，不仅有checkpoint文件，还有保存了正在处理的Take和Put请求的文件
+         * 以及${user.home}/.flume/file-channel/checkpoint/queueset目录
+         */
         queue = new FlumeEventQueue(backingStore, inflightTakesFile,
             inflightPutsFile, queueSetDir);
         LOGGER.info("Last Checkpoint " + new Date(checkpointFile.lastModified())
@@ -452,6 +484,9 @@ public class Log {
          * This will throw if and only if checkpoint file was fine,
          * but the inflights were not. If the checkpoint was bad, the backing
          * store factory would have thrown.
+         *
+         * 进行重放，传入了queue和dataFiles，queue记录了Checkpoint内容
+         * 快速重放后，queue中会记录提交了但未被Take的Put。
          */
         doReplay(queue, dataFiles, encryptionKeyProvider, shouldFastReplay);
       } catch (BadCheckpointException ex) {
@@ -490,6 +525,8 @@ public class Log {
 
       for (int index = 0; index < logDirs.length; index++) {
         LOGGER.info("Rolling " + logDirs[index]);
+
+        // 此处会构建对应的logFiles数组
         roll(index);
       }
 
@@ -510,25 +547,31 @@ public class Log {
     }
   }
 
+  // 真正的回放操作
   @SuppressWarnings("deprecation")
   private void doReplay(FlumeEventQueue queue, List<File> dataFiles,
                         KeyProvider encryptionKeyProvider,
                         boolean useFastReplay) throws Exception {
+
+    // 重建器
     CheckpointRebuilder rebuilder = new CheckpointRebuilder(dataFiles,
         queue, fsyncPerTransaction);
-    if (useFastReplay && rebuilder.rebuild()) {
+    if (useFastReplay && rebuilder.rebuild()) { // 快速重放，不考虑Checkpoint
       didFastReplay = true;
       LOGGER.info("Fast replay successful.");
     } else {
+      // 重放处理器
       ReplayHandler replayHandler = new ReplayHandler(queue,
           encryptionKeyProvider, fsyncPerTransaction);
-      if (useLogReplayV1) {
+      if (useLogReplayV1) { // V1版本重放
         LOGGER.info("Replaying logs with v1 replay logic");
         replayHandler.replayLogv1(dataFiles);
-      } else {
+      } else { // V2版本重放
         LOGGER.info("Replaying logs with v2 replay logic");
         replayHandler.replayLog(dataFiles);
       }
+
+      // 计数器
       readCount = replayHandler.getReadCount();
       putCount = replayHandler.getPutCount();
       takeCount = replayHandler.getTakeCount();
@@ -633,11 +676,16 @@ public class Log {
   FlumeEventPointer put(long transactionID, Event event)
       throws IOException {
     Preconditions.checkState(open, "Log is closed");
+    // 构造为FlumeEvent对象
     FlumeEvent flumeEvent = new FlumeEvent(
         event.getHeaders(), event.getBody());
+    // 构造为Put对象，递增Writer ID
     Put put = new Put(transactionID, WriteOrderOracle.next(), flumeEvent);
+    // 序列化
     ByteBuffer buffer = TransactionEventRecord.toByteBuffer(put);
+    // 根据事务ID获取对应的Log日志文件
     int logFileIndex = nextLogWriter(transactionID);
+    // 检查Log日志文件剩余容量是否够写（最大 ~ 1.52G）
     long usableSpace = logFiles.get(logFileIndex).getUsableSpace();
     long requiredSpace = minimumRequiredSpace + buffer.limit();
     if (usableSpace <= requiredSpace) {
@@ -647,6 +695,7 @@ public class Log {
     boolean error = true;
     try {
       try {
+        // 获取Log日志文件，并进行写入
         FlumeEventPointer ptr = logFiles.get(logFileIndex).put(buffer);
         error = false;
         return ptr;
@@ -678,10 +727,14 @@ public class Log {
   void take(long transactionID, FlumeEventPointer pointer)
       throws IOException {
     Preconditions.checkState(open, "Log is closed");
+    // 构造Take对象
     Take take = new Take(transactionID, WriteOrderOracle.next(),
         pointer.getOffset(), pointer.getFileID());
+    // 序列化
     ByteBuffer buffer = TransactionEventRecord.toByteBuffer(take);
+    // 根据事务ID获取Log日志文件。
     int logFileIndex = nextLogWriter(transactionID);
+    // 检查Log日志文件的剩余空间（最大 ~ 1.52G）
     long usableSpace = logFiles.get(logFileIndex).getUsableSpace();
     long requiredSpace = minimumRequiredSpace + buffer.limit();
     if (usableSpace <= requiredSpace) {
@@ -691,13 +744,17 @@ public class Log {
     boolean error = true;
     try {
       try {
+        // 写入Take
         logFiles.get(logFileIndex).take(buffer);
         error = false;
       } catch (LogFileRetryableIOException e) {
         if (!open) {
           throw e;
         }
+
+        // 如果出错，检查是否需要滚动Log日志文件
         roll(logFileIndex, buffer);
+        // 重新写入
         logFiles.get(logFileIndex).take(buffer);
         error = false;
       }
@@ -800,6 +857,7 @@ public class Log {
     checkpointReadLock.unlock();
   }
 
+  // 写锁
   private void lockExclusive() {
     checkpointWriterLock.lock();
   }
@@ -960,6 +1018,9 @@ public class Log {
    * read lock. The synchronization guarantees that multiple threads don't
    * roll at the same time.
    *
+   * 滚动Log日志文件。
+   * 日志文件的名称为"log-FileID"
+   *
    * @param index
    * @throws IOException
    */
@@ -976,6 +1037,7 @@ public class Log {
         try {
           LOGGER.info("Roll start " + logDirs[index]);
           int fileID = nextFileID.incrementAndGet();
+          // 日志文件前缀为"log-"，接上File ID
           File file = new File(logDirs[index], PREFIX + fileID);
           LogFile.Writer writer = LogFileFactory.getWriter(file, fileID,
               maxFileSize, encryptionKey, encryptionKeyAlias,
@@ -998,6 +1060,7 @@ public class Log {
     }
   }
 
+  // 写Checkpoint操作
   private boolean writeCheckpoint() throws Exception {
     return writeCheckpoint(false);
   }
@@ -1010,21 +1073,33 @@ public class Log {
    * write lock. So this method gets exclusive access to all the
    * data structures this method accesses.
    *
+   * 写Checkpoint操作。
+   * 将checpoint、inflightTakes、inflightPuts都刷新至磁盘，
+   * 先后将inflightPuts、inflightTakes、checkpoint.meta重建，
+   * 更新checkpoint文件并刷新至磁盘，这些文件都在checkpointDir目录下；
+   * 更新log-ID.meta文件；同时肩负起删除log文件及其对应的meta文件的责任。
+   *
    * @param force a flag to force the writing of checkpoint
    * @throws IOException if we are unable to write the checkpoint out to disk
    */
   private Boolean writeCheckpoint(Boolean force) throws Exception {
     boolean checkpointCompleted = false;
+    // 获取Checkpoint可用的空间大小
     long usableSpace = checkpointDir.getUsableSpace();
+    // 小于minimumRequiredSpace（默认500MB）会抛异常，不会再往里写了
     if (usableSpace <= minimumRequiredSpace) {
       throw new IOException("Usable space exhausted, only " + usableSpace +
           " bytes remaining, required " + minimumRequiredSpace + " bytes");
     }
+
+    // 获取写锁
     lockExclusive();
     SortedSet<Integer> logFileRefCountsAll = null;
     SortedSet<Integer> logFileRefCountsActive = null;
     try {
+      // 先将checpoint、inflightTakes、inflightPuts都刷新至磁盘
       if (queue.checkpoint(force)) {
+        // 从FlumeEventQueue获取已Checkpoint的写顺序ID
         long logWriteOrderID = queue.getLogWriteOrderID();
 
         //Since the active files might also be in the queue's fileIDs,
@@ -1033,38 +1108,57 @@ public class Log {
         //fileID set from the queue have been updated.
         //Since clone is smarter than insert, better to make
         //a copy of the set first so that we can use it later.
+        // 获取所有checkpoint里正在inflightputs、inflighttakes队列中的File ID
         logFileRefCountsAll = queue.getFileIDs();
+
+        // 排序，构造为红黑树
         logFileRefCountsActive = new TreeSet<Integer>(logFileRefCountsAll);
 
+        // 处理Active的log日志文件，Active表示log日志文件有put/take在inflightTakes、inflightPuts队列
         int numFiles = logFiles.length();
         for (int i = 0; i < numFiles; i++) {
+
+          // 获取log日志文件的Writer
           LogFile.Writer logWriter = logFiles.get(i);
+          // 获取File ID
           int logFileID = logWriter.getLogFileID();
+          // 获取日志文件File对象
           File logFile = logWriter.getFile();
+
+          // 获取.meta文件的Writer
           LogFile.MetaDataWriter writer =
               LogFileFactory.getMetaDataWriter(logFile, logFileID);
           try {
+            // 写一次.meta文件，记录了日志文件的Position和写顺序ID
             writer.markCheckpoint(logWriter.position(), logWriteOrderID);
           } finally {
+            // 关闭.meta文件的Writer
             writer.close();
           }
+
+          // 从checkpoint队列里移除已处理的Log日志的File ID
           logFileRefCountsAll.remove(logFileID);
           LOGGER.info("Updated checkpoint for file: " + logFile + " position: "
               + logWriter.position() + " logWriteOrderID: " + logWriteOrderID);
         }
 
         // Update any inactive data files as well
+        // 遍历处理非Active的log日志文件
         Iterator<Integer> idIterator = logFileRefCountsAll.iterator();
         while (idIterator.hasNext()) {
           int id = idIterator.next();
+          // 获取log日志文件读取器，以获取log日志文件的File对象
           LogFile.RandomReader reader = idLogFileMap.remove(id);
           File file = reader.getFile();
           reader.close();
+          // 获取Log日志文件对应的.meta文件
           LogFile.MetaDataWriter writer =
               LogFileFactory.getMetaDataWriter(file, id);
           try {
+            // 进行一次Checkpoint
             writer.markCheckpoint(logWriteOrderID);
           } finally {
+            // 缓存Reader
             reader = LogFileFactory.getRandomReader(file,
                 encryptionKeyProvider, fsyncPerTransaction);
             idLogFileMap.put(id, reader);
@@ -1084,6 +1178,7 @@ public class Log {
         checkpointCompleted = true;
       }
     } finally {
+      // 释放锁
       unlockExclusive();
     }
     //Do the deletes outside the checkpointWriterLock
@@ -1214,6 +1309,7 @@ public class Log {
       this.log = log;
     }
 
+    // 写Checkpoint操作
     @Override
     public void run() {
       try {

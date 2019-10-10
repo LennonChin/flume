@@ -44,15 +44,20 @@ class EventQueueBackingStoreFactory {
   static EventQueueBackingStore get(File checkpointFile, File backupCheckpointDir,
                                     int capacity, String name, boolean upgrade,
                                     boolean shouldBackup, boolean compressBackup) throws Exception {
+    // checkpoint.meta文件,${user.home}/.flume/file-channel/checkpoint/checkpoint.meta文件
     File metaDataFile = Serialization.getMetaDataFile(checkpointFile);
     RandomAccessFile checkpointFileHandle = null;
     try {
+      // 检查checkpoint文件是否存在
       boolean checkpointExists = checkpointFile.exists();
+      // 检查checkpoint.meta文件是否存在
       boolean metaDataExists = metaDataFile.exists();
-      if (metaDataExists) {
+      // 如果checkpoint.meta文件存在，checkpoint文件必须存在且长度大于0
+      if (metaDataExists) { // checkpoint.meta文件存在
         // if we have a metadata file but no checkpoint file, we have a problem
         // delete everything in the checkpoint directory and force
         // a full replay.
+        // 如果checkpoint文件不存在，或长度为0，则抛出异常
         if (!checkpointExists || checkpointFile.length() == 0) {
           LOG.warn("MetaData file for checkpoint "
               + " exists but checkpoint does not. Checkpoint = " + checkpointFile
@@ -64,25 +69,34 @@ class EventQueueBackingStoreFactory {
         }
       }
       // brand new, use v3
-      if (!checkpointExists) {
-        if (!checkpointFile.createNewFile()) {
+      if (!checkpointExists) { // checkpoint文件不存在
+        if (!checkpointFile.createNewFile()) { // 创建checkpoint文件
           throw new IOException("Cannot create " + checkpointFile);
         }
+        // 返回v3版本的EventQueueBackingStoreFileV3
         return new EventQueueBackingStoreFileV3(checkpointFile,
             capacity, name, backupCheckpointDir, shouldBackup, compressBackup);
       }
       // v3 due to meta file, version will be checked by backing store
-      if (metaDataExists) {
+      // v3版本的Checkpoint才有checkpoint.meta
+      // checkpoint文件存在
+      if (metaDataExists) { // checkpoint.meta文件存在
+        // 返回V3版本的EventQueueBackingStoreFileV3
         return new EventQueueBackingStoreFileV3(checkpointFile, capacity,
             name, backupCheckpointDir, shouldBackup, compressBackup);
       }
+
+      // checkpoint文件存在，但不存在checkpoint.meta文件
+      // 创建checkpoint文件的RAF
       checkpointFileHandle = new RandomAccessFile(checkpointFile, "r");
+      // 读Long长度的Version
       int version = (int) checkpointFileHandle.readLong();
-      if (Serialization.VERSION_2 == version) {
-        if (upgrade) {
+      if (Serialization.VERSION_2 == version) { // 2版本
+        if (upgrade) { // 升级，返回v3版本的EventQueueBackingStoreFileV3
           return upgrade(checkpointFile, capacity, name, backupCheckpointDir,
               shouldBackup, compressBackup);
         }
+        // 不升级，返回v2版本的EventQueueBackingStoreFileV2
         return new EventQueueBackingStoreFileV2(checkpointFile, capacity, name);
       }
       LOG.error("Found version " + Integer.toHexString(version) + " in " +
@@ -104,15 +118,24 @@ class EventQueueBackingStoreFactory {
                                                 File backupCheckpointDir, boolean shouldBackup,
                                                 boolean compressBackup) throws Exception {
     LOG.info("Attempting upgrade of " + checkpointFile + " for " + name);
+    // v2，EventQueueBackingStoreFileV2
     EventQueueBackingStoreFileV2 backingStoreV2 =
         new EventQueueBackingStoreFileV2(checkpointFile, capacity, name);
     String backupName = checkpointFile.getName() + "-backup-"
         + System.currentTimeMillis();
+
+    // 把v2版本的checkpoint文件拷贝一份，命名为checkpoint-backup-当前时间戳
     Files.copy(checkpointFile,
         new File(checkpointFile.getParentFile(), backupName));
+
+    // 构建checkpoint.meta文件的File对象
     File metaDataFile = Serialization.getMetaDataFile(checkpointFile);
+
+    // 升级为V3操作
     EventQueueBackingStoreFileV3.upgrade(backingStoreV2, checkpointFile,
         metaDataFile);
+
+    // 返回v3版本的EventQueueBackingStoreFileV3
     return new EventQueueBackingStoreFileV3(checkpointFile, capacity, name,
         backupCheckpointDir, shouldBackup, compressBackup);
   }

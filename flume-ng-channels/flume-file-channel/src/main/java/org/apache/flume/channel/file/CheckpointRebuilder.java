@@ -58,11 +58,15 @@ public class CheckpointRebuilder {
     this.fsyncPerTransaction = fsyncPerTransaction;
   }
 
+  // 快速重放
   public boolean rebuild() throws IOException, Exception {
     LOG.info("Attempting to fast replay the log files.");
     List<LogFile.SequentialReader> logReaders = Lists.newArrayList();
+
+    // 遍历dataDir下的log文件
     for (File logFile : logFiles) {
       try {
+        // 获取log文件的有序读取器
         logReaders.add(LogFileFactory.getSequentialReader(logFile, null,
             fsyncPerTransaction));
       } catch (EOFException e) {
@@ -72,54 +76,101 @@ public class CheckpointRebuilder {
     long transactionIDSeed = 0;
     long writeOrderIDSeed = 0;
     try {
+
+      // 遍历所有log文件的有序读取器
       for (LogFile.SequentialReader log : logReaders) {
         LogRecord entry;
+        // 获取文件ID
         int fileID = log.getLogFileID();
+        // 循环获取下一个条目
         while ((entry = log.next()) != null) {
+          // 偏移量
           int offset = entry.getOffset();
+          // 获取事件
           TransactionEventRecord record = entry.getEvent();
+          // 事务ID
           long trans = record.getTransactionID();
+          // 写顺序ID
           long writeOrderID = record.getLogWriteOrderID();
+          // 得到较大的事务ID
           transactionIDSeed = Math.max(trans, transactionIDSeed);
+          // 得到较大的写顺序ID
           writeOrderIDSeed = Math.max(writeOrderID, writeOrderIDSeed);
-          if (record.getRecordType() == TransactionEventRecord.Type.PUT.get()) {
+
+          /**
+           * 判断日志的类型是PUT、TAKE、COMMIT还是ROLLBACK，这里的三类操作都是针对每条日志。
+           * 1. 日志的PUT和TAKE都必须在COMMIT之后才算执行成功。
+           * 2. 对同一条日志的TAKE必须在PUT且COMMIT之后才允许。
+           * 3. 在一条日志的PUT还未COMMIT之前，是不能对其进行TAKE的。
+           * 4. 为COMMIT的PUT或TAKE是可以通过ROLLBACK回滚的。
+           * 5. ROLLBACK只是将uncommittedPuts和uncommittedTakes中未提交的PUT和TAKE删除即可。
+           * 6. 最终committedPuts中已提交但还未被TAKE的PUT操作会单独放入queue队列，等待后续处理。
+           */
+          if (record.getRecordType() == TransactionEventRecord.Type.PUT.get()) { // PUT
+            // 记录到uncommittedPuts中
             uncommittedPuts.put(record.getTransactionID(),
                 new ComparableFlumeEventPointer(
                     new FlumeEventPointer(fileID, offset),
                     record.getLogWriteOrderID()));
-          } else if (record.getRecordType() == TransactionEventRecord.Type.TAKE.get()) {
+          } else if (record.getRecordType() == TransactionEventRecord.Type.TAKE.get()) { // TAKE
             Take take = (Take) record;
+            // 记录到uncommittedTakes中
             uncommittedTakes.put(record.getTransactionID(),
                 new ComparableFlumeEventPointer(
                     new FlumeEventPointer(take.getFileID(), take.getOffset()),
                     record.getLogWriteOrderID()));
-          } else if (record.getRecordType() == TransactionEventRecord.Type.COMMIT.get()) {
+          } else if (record.getRecordType() == TransactionEventRecord.Type.COMMIT.get()) { // COMMIT
             Commit commit = (Commit) record;
+
+            // 该COMMIT对应的是PUT操作
             if (commit.getType() == TransactionEventRecord.Type.PUT.get()) {
+              // 获取该COMMIT对应的所有PUT
               Set<ComparableFlumeEventPointer> puts =
                   uncommittedPuts.get(record.getTransactionID());
               if (puts != null) {
                 for (ComparableFlumeEventPointer put : puts) {
+                  /**
+                   * 如果pendingTasks中包含put，则将其移除，不做处理；
+                   * 但如果pendingTasks中不包含put，说明不是还在等待处理的put，
+                   * 那么本次的commit则可以直接提交该put，
+                   * 因此将该put添加到committedPuts中，表示该put已提交。
+                   */
                   if (!pendingTakes.remove(put)) {
+                    // 记录到committedPuts中
                     committedPuts.add(put);
                   }
                 }
               }
             } else {
+
+              // 该COMMIT对应的是TAKE操作
+              // 获取该COMMIT对应的所有TAKE
               Set<ComparableFlumeEventPointer> takes =
                   uncommittedTakes.get(record.getTransactionID());
               if (takes != null) {
                 for (ComparableFlumeEventPointer take : takes) {
+                  /**
+                   * 需要注意：take必须在put被commit之后。
+                   * 如果committedPuts中包含该take，表示该take操作的日志的put已经commit了，
+                   * 因为对应的put已经commit了，当然可以进行take，将其移除，表示准备提交该take。
+                   * 但如果committedPuts中不包含take操作的日志的put，
+                   * 说明该日志的put还未提交，因此不能take，还需要等待，
+                   * 此时会将该take添加到pendingTakes中，表示take在等待处理。
+                   */
                   if (!committedPuts.remove(take)) {
+                    // 记录到pendingTakes中
                     pendingTakes.add(take);
                   }
                 }
               }
             }
-          } else if (record.getRecordType() == TransactionEventRecord.Type.ROLLBACK.get()) {
+          } else if (record.getRecordType() == TransactionEventRecord.Type.ROLLBACK.get()) { // ROLLBACK
+            // 回滚操作
             if (uncommittedPuts.containsKey(record.getTransactionID())) {
+              // 回滚没有commit的put，直接将对应的所有put从uncommittedPuts中移除即可。
               uncommittedPuts.removeAll(record.getTransactionID());
             } else {
+              // 回滚没有commit的take，直接将对应的所有take从uncommittedTakes中移除即可。
               uncommittedTakes.removeAll(record.getTransactionID());
             }
           }
@@ -131,12 +182,16 @@ public class CheckpointRebuilder {
     } finally {
       TransactionIDOracle.setSeed(transactionIDSeed);
       WriteOrderOracle.setSeed(writeOrderIDSeed);
+      // 关闭所有日志文件的顺序读取器
       for (LogFile.SequentialReader reader : logReaders) {
         reader.close();
       }
     }
+
+    // 对剩余的已提交的put构造有序树集合
     Set<ComparableFlumeEventPointer> sortedPuts = Sets.newTreeSet(committedPuts);
     int count = 0;
+    // 遍历有序的put，添加到FlumeEventQueue队列中
     for (ComparableFlumeEventPointer put : sortedPuts) {
       queue.addTail(put.pointer);
       count++;

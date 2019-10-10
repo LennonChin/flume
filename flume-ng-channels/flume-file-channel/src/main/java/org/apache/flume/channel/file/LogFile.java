@@ -300,11 +300,13 @@ public abstract class LogFile {
       lastCommitPosition = position();
     }
 
+    // 写入数据到Log日志文件
     private Pair<Integer, Integer> write(ByteBuffer buffer)
         throws IOException {
       if (!isOpen()) {
         throw new LogFileRetryableIOException("File closed " + file);
       }
+      // 获取当前Log日志文件的position，表示文件的内容长度
       long length = position();
       long expectedLength = length + (long) buffer.limit();
       if (expectedLength > maxFileSize) {
@@ -315,12 +317,17 @@ public abstract class LogFile {
       Preconditions.checkState(offset >= 0, String.valueOf(offset));
       // OP_RECORD + size + buffer
       int recordLength = 1 + (int) Serialization.SIZE_OF_INT + buffer.limit();
+      // 更新容量，减去即将写入的数据长度
       usableSpace.decrement(recordLength);
+      // 预分配空间
       preallocate(recordLength);
       ByteBuffer toWrite = ByteBuffer.allocate(recordLength);
+      // 先写OP_RECORD标记
       toWrite.put(OP_RECORD);
+      // 写入到ByteBuffer
       writeDelimitedBuffer(toWrite, buffer);
       toWrite.position(0);
+      // 写入到Log日志文件
       int wrote = getFileChannel().write(toWrite);
       Preconditions.checkState(wrote == toWrite.limit());
       return Pair.of(getLogFileID(), offset);
@@ -728,6 +735,7 @@ public abstract class LogFile {
 
   protected static byte[] readDelimitedBuffer(RandomAccessFile fileHandle)
       throws IOException, CorruptEventException {
+    // 读取长度
     int length = fileHandle.readInt();
     if (length < 0) {
       throw new CorruptEventException("Length of event is: " + String.valueOf(length) +

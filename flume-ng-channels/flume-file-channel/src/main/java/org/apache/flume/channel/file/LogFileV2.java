@@ -134,15 +134,21 @@ class LogFileV2 extends LogFile {
   static class SequentialReader extends LogFile.SequentialReader {
     SequentialReader(File file) throws EOFException, IOException {
       super(file, null);
+
+      // fileHandle其实就是传入的file文件的RAF，在父类中被构造
       RandomAccessFile fileHandle = getFileHandle();
+      // 读取并检查版本号
       int version = fileHandle.readInt();
       if (version != getVersion()) {
         throw new IOException("Version is " + Integer.toHexString(version) +
             " expected " + Integer.toHexString(getVersion())
             + " file: " + file.getCanonicalPath());
       }
+      // 读取File ID
       setLogFileID(fileHandle.readInt());
+      // 读取最后一次的Position
       setLastCheckpointPosition(fileHandle.readLong());
+      // 读取最后一次的写顺序ID
       setLastCheckpointWriteOrderID(fileHandle.readLong());
     }
 

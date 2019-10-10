@@ -321,19 +321,28 @@ public class LogFileV3 extends LogFile {
         encryptionKeyProvider, boolean fsyncPerTransaction) throws EOFException,
         IOException {
       super(file, encryptionKeyProvider);
+
+      // 是否每次事务都fsync
       this.fsyncPerTransaction = fsyncPerTransaction;
+
+      // .meta文件
       File metaDataFile = Serialization.getMetaDataFile(file);
+      // .meta文件输入流
       FileInputStream inputStream = new FileInputStream(metaDataFile);
       try {
         ProtosFactory.LogFileMetaData metaData = Preconditions.checkNotNull(
             ProtosFactory.LogFileMetaData.parseDelimitedFrom(inputStream),
             "MetaData cannot be null");
+
+        // 读取并检查版本号
         int version = metaData.getVersion();
         if (version != getVersion()) {
           throw new IOException("Version is " + Integer.toHexString(version) +
               " expected " + Integer.toHexString(getVersion())
               + " file: " + file.getCanonicalPath());
         }
+
+        // 检查是否加密
         if (metaData.hasEncryption()) {
           if (getKeyProvider() == null) {
             throw new IllegalStateException("Data file is encrypted but no " +
@@ -344,10 +353,16 @@ public class LogFileV3 extends LogFile {
           decryptor = CipherProviderFactory.getDecrypter(
               encryption.getCipherProvider(), key, encryption.getParameters().toByteArray());
         }
+
+        // File ID
         setLogFileID(metaData.getLogFileID());
+        // 最后一次的Position
         setLastCheckpointPosition(metaData.getCheckpointPosition());
+        // 最后一次的写顺序ID
         setLastCheckpointWriteOrderID(metaData.getCheckpointWriteOrderID());
+        // 前一次的Position
         setPreviousCheckpointPosition(metaData.getBackupCheckpointPosition());
+        // 前一次的写顺序ID
         setPreviousCheckpointWriteOrderID(
             metaData.getBackupCheckpointWriteOrderID());
       } finally {
@@ -364,16 +379,21 @@ public class LogFileV3 extends LogFile {
       return Serialization.VERSION_3;
     }
 
+    // 获取下一个条目
     @Override
     LogRecord doNext(int offset) throws IOException, CorruptEventException,
         DecryptionFailureException {
       byte[] buffer = null;
+      // 事件
       TransactionEventRecord event = null;
       try {
+        // 读取数据
         buffer = readDelimitedBuffer(getFileHandle());
         if (decryptor != null) {
+          // 解密数据
           buffer = decryptor.decrypt(buffer);
         }
+        // 获取event
         event = TransactionEventRecord.fromByteArray(buffer);
       } catch (CorruptEventException ex) {
         LOGGER.warn("Corrupt file found. File id: log-" + this.getLogFileID(),

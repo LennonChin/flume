@@ -127,6 +127,7 @@ final class FlumeEventQueue {
   }
 
   synchronized long getLogWriteOrderID() {
+    // backingStore只是对checkpoint文件进行处理得到的结果，不包含inflightputs和inflighttakes
     return backingStore.getLogWriteOrderID();
   }
 
@@ -352,6 +353,7 @@ final class FlumeEventQueue {
     }
     //if txn id = 0, we are recovering from a crash.
     if (transactionID != 0) {
+      // 存入Take到inflightTakes
       inflightTakes.addEvent(transactionID, value);
     }
     if (index > backingStore.getSize() / 2) {
